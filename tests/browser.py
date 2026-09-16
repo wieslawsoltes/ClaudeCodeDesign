@@ -55,15 +55,35 @@ try:
       launch['channel'] = 'chromium'
       if os.environ.get('CHROMIUM_EXECUTABLE'): launch['executable_path'] = os.environ['CHROMIUM_EXECUTABLE']
     browser = getattr(p, args.browser).launch(**launch)
-    # Playwright cannot reliably intercept requests controlled by service workers.
-    # Keep mocked API tests isolated; actual offline/SW behavior is tested separately below.
-    context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True, service_workers='block')
+    context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True)
+    # Playwright's generic SW-block shim also accesses opaque preview frames.
+    # Disable registration only in the top document of this mock-only context.
+    # The separate offline context below uses the real worker unchanged.
+    context.add_init_script("""if (self === top && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register = () => Promise.reject(new Error('Disabled in API-mock test context'));
+    }""")
     page = context.new_page(); errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('console', lambda message: console_errors.append(message.text) if message.type == 'error' else None)
     page.goto(BASE); expect(page.locator('h1')).to_contain_text('Great ideas')
     expect(page.locator('#renderer-status')).to_have_text(re.compile(r'^(Canvas|WebGPU)$'), timeout=15000)
     no_overflow(page)
+    # Check actual pixels, not merely adapter initialization. The screenshot is
+    # decoded by a throwaway canvas; no parent security policy is disabled.
+    page.wait_for_timeout(300)
+    import base64
+    ornament = page.locator('.hero-art').screenshot(path=str(OUT/'ornament.png'))
+    pixels = page.evaluate("""async (data) => {
+      const image = new Image(); image.src = data; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(image, 0, 0);
+      const bytes = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let colored = 0;
+      for (let i=0; i<bytes.length; i+=4) if (bytes[i]-bytes[i+1]>35 && bytes[i+1]-bytes[i+2]>7 && bytes[i+3]>100) colored++;
+      return {colored, width:canvas.width, height:canvas.height};
+    }""", 'data:image/png;base64,' + base64.b64encode(ornament).decode())
+    assert pixels['colored'] > 500, f'Renderer initialized but ornament pixels missing: {pixels}'
+    passed('Renderer produces visible colored pixels in reduced-motion mode', pixels)
     assert not page.locator('.mobile-menu').is_visible()
     page.screenshot(path=str(OUT/'desktop.png'), full_page=True)
     passed('Desktop design, native modules, renderer initialization and no overflow', page.locator('#renderer-status').inner_text())
@@ -176,7 +196,8 @@ except Exception as error:
     try:
         if not page.is_closed():
             page.screenshot(path=str(OUT/'failure.png'),full_page=True)
-            results.append({'name':'Failure dialog detail','passed':False,'detail':page.locator('#dialog-error').inner_text(timeout=1000) if page.locator('#dialog-error').count() else ''})
+            if page.locator('#dialog-error').count():
+                results.append({'name':'Failure dialog detail','passed':False,'detail':page.locator('#dialog-error').inner_text(timeout=1000)})
     except Exception:
         pass
     raise

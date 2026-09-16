@@ -33,13 +33,13 @@ struct Output { @builtin(position) position: vec4f, @location(0) uv: vec2f, @loc
 }`;
 export class AmbientRenderer {
   constructor(canvas, status = () => {}) {
-    this.canvas = canvas; this.status = status; this.dead = false; this.last = -1000; this.pointer = [0, 0];
+    this.canvas = canvas; this.status = status; this.dead = false; this.last = -1000; this.dirty = true; this.pointer = [0, 0];
     this.motion = matchMedia('(prefers-reduced-motion: reduce)');
-    this.onPointer = event => { const r = canvas.getBoundingClientRect(); this.pointer = [(event.clientX - r.left) / r.width - .5, (event.clientY - r.top) / r.height - .5]; if (this.motion.matches) this.paint(performance.now()); };
-    this.onLeave = () => { this.pointer = [0, 0]; };
+    this.onPointer = event => { const r = canvas.getBoundingClientRect(); this.pointer = [(event.clientX - r.left) / r.width - .5, (event.clientY - r.top) / r.height - .5]; this.paint(); };
+    this.onLeave = () => { this.pointer = [0, 0]; this.paint(); };
     canvas.addEventListener('pointermove', this.onPointer, { passive: true }); canvas.addEventListener('pointerleave', this.onLeave);
-    this.onVisible = () => { cancelAnimationFrame(this.frame); if (!document.hidden) this.loop(performance.now()); };
-    this.onMotion = () => { cancelAnimationFrame(this.frame); this.paint(performance.now()); if (!this.motion.matches) this.loop(performance.now()); };
+    this.onVisible = () => { cancelAnimationFrame(this.frame); this.frame = null; if (!document.hidden) this.paint(); };
+    this.onMotion = () => { cancelAnimationFrame(this.frame); this.frame = null; this.paint(); };
     document.addEventListener('visibilitychange', this.onVisible); this.motion.addEventListener('change', this.onMotion);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(canvas);
     this.initialize();
@@ -61,33 +61,42 @@ export class AmbientRenderer {
       this.context.configure({ device, format, alphaMode: 'premultiplied' });
       this.uniform = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       this.bind = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: this.uniform } }] });
-      this.kind = 'WebGPU'; this.status(this.kind); this.resize(); this.loop(performance.now());
+      this.kind = 'WebGPU'; this.status(this.kind); this.resize();
+      device.addEventListener('uncapturederror', () => { if (!this.dead && this.kind === 'WebGPU') this.fallback(); });
       device.lost.then(() => { if (!this.dead && this.kind === 'WebGPU') this.fallback(); });
     } catch { if (!this.dead) this.fallback(); }
   }
   fallback() {
-    cancelAnimationFrame(this.frame); this.kind = 'Canvas'; this.device?.destroy(); this.device = null;
+    cancelAnimationFrame(this.frame); this.frame = null; this.kind = 'Canvas'; this.device?.destroy(); this.device = null;
     if (!this.fallbackCanvas) {
       this.fallbackCanvas = document.createElement('canvas'); this.fallbackCanvas.className = this.canvas.className;
       this.fallbackCanvas.setAttribute('aria-hidden', 'true'); this.fallbackCanvas.style.pointerEvents = 'none';
       this.canvas.after(this.fallbackCanvas); this.canvas.style.opacity = '0';
     }
-    this.ctx = this.fallbackCanvas.getContext('2d'); this.status('Canvas'); this.resize(); this.loop(performance.now());
+    this.ctx = this.fallbackCanvas.getContext('2d'); this.status('Canvas'); this.resize();
   }
   resize() {
     if (this.dead) return;
     const rect = this.canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 1.75);
     this.width = Math.max(1, Math.round(rect.width * dpr)); this.height = Math.max(1, Math.round(rect.height * dpr));
-    this.canvas.width = this.width; this.canvas.height = this.height;
+    if (this.canvas.width !== this.width) this.canvas.width = this.width;
+    if (this.canvas.height !== this.height) this.canvas.height = this.height;
     if (this.fallbackCanvas) { this.fallbackCanvas.width = this.width; this.fallbackCanvas.height = this.height; }
-    this.paint(performance.now());
+    this.paint();
   }
   loop(now) {
+    this.frame = null;
     if (this.dead || document.hidden) return;
-    if (now - this.last >= 32) { this.paint(now); this.last = now; }
-    if (!this.motion.matches) this.frame = requestAnimationFrame(t => this.loop(t));
+    if (this.dirty || now - this.last >= 32) { this.dirty = false; this.draw(now); this.last = now; }
+    if (!this.dead && !this.motion.matches && !this.frame) this.frame = requestAnimationFrame(t => this.loop(t));
   }
-  paint(now) {
+  /** Coalesce all drawing, including static frames, into the presentation phase. */
+  paint() {
+    if (this.dead) return;
+    this.dirty = true;
+    if (!document.hidden && !this.frame) this.frame = requestAnimationFrame(now => this.loop(now));
+  }
+  draw(now) {
     if (this.dead || !this.kind || !this.width || !this.height) return;
     const time = this.motion.matches ? 0 : now * .001;
     const dark = document.documentElement.dataset.theme === 'dark';
