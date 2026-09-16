@@ -51,7 +51,8 @@ try:
   with sync_playwright() as p:
     launch = {'headless': True}
     if args.browser == 'chromium':
-      launch['args'] = ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--use-angle=swiftshader']
+      launch['args'] = ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-features=Vulkan', '--disable-vulkan-surface']
+      launch['channel'] = 'chromium'
       if os.environ.get('CHROMIUM_EXECUTABLE'): launch['executable_path'] = os.environ['CHROMIUM_EXECUTABLE']
     browser = getattr(p, args.browser).launch(**launch)
     context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True)
@@ -95,7 +96,7 @@ try:
         expect(tab.locator('#sidebar')).to_have_attribute('aria-modal','true')
         assert tab.locator('.shell').evaluate('(e)=>e.inert')
         tab.keyboard.press('Escape');assert not tab.locator('.shell').evaluate('(e)=>e.inert')
-        tab.locator('.mobile-nav a[href="#files"]').tap();expect(tab.locator('#editor')).to_be_visible();no_overflow(tab)
+        tab.locator('.mobile-nav button[data-route="files"]').tap();expect(tab.locator('#editor')).to_be_visible();no_overflow(tab)
         go(tab,'home')
       tab.wait_for_timeout(400);tab.screenshot(path=str(OUT/f'mobile-{width}.png'),full_page=True)
       mobile.close()
@@ -127,7 +128,7 @@ try:
         if request.method=='OPTIONS':
           route.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*'});return
         if '/v1/models' in request.url:
-          route.fulfill(json={'data':[{'id':'mock-account-model','display_name':'Account model'}],'has_more':False});return
+          route.fulfill(json={'data':[{'id':'mock-account-model','display_name':'Account model'}],'has_more':False},headers={'Access-Control-Allow-Origin':'*'});return
         payload=request.post_data_json;requests.append(payload)
         route.fulfill(status=200,content_type='text/event-stream',body=events(tool=len(requests)==1),headers={'Access-Control-Allow-Origin':'*'})
       context.route('https://api.anthropic.com/**',api_route)
