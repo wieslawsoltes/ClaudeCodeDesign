@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta name="description" content="A considered space for your next great idea. An independent, local-first AI coding workspace with live Claude API chat, reviewable changes, and sandboxed previews.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src https: http://localhost:* http://127.0.0.1:*; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Claude Code — A space to build</title>
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./src/style.css">
+  <script type="module" src="./src/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to workspace</a>
+  <div id="app"></div>
+  <dialog id="modal" aria-labelledby="dialog-title"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input id="file-input" type="file" multiple hidden accept=".html,.htm,.css,.js,.mjs,.json,.md,.txt,.svg,.xml,.yaml,.yml,.toml,.py,.cs,.rs,.go,.java,.jsx,.ts,.tsx,.sql">
+  <input id="folder-input" type="file" multiple webkitdirectory hidden>
+  <input id="restore-input" type="file" accept="application/json,.json" hidden>
+  <noscript>This workspace needs JavaScript. Enable it to use the editor, local demo, and API connection.</noscript>
+</body>
+</html>

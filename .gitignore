@@ -1,0 +1,11 @@
+dist/
+node_modules/
+__pycache__/
+test-results/
+playwright-report/
+.env
+.env.*
+*.key
+*.pem
+qa/
+qa-results/
