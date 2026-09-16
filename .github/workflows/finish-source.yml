@@ -1,0 +1,97 @@
+name: Finish source recovery
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/finish-source.yml']
+permissions:
+  contents: write
+concurrency:
+  group: source-recovery
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify final payload and recover original records
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import zlib from 'node:zlib';
+          import crypto from 'node:crypto';
+          const names = ['final.00.b64', 'final.01.b64', 'final.02.b64'];
+          const parts = names.map(name => fs.readFileSync('.bootstrap/' + name, 'utf8'));
+          if (parts.map(x => x.length).join(',') !== '18000,18000,8996') throw Error('Unexpected payload length');
+          const payload = Buffer.from(parts.join(''), 'base64');
+          const digest = crypto.createHash('sha256').update(payload).digest('hex');
+          if (digest !== '824e7d52f136c5de090091f61fd1cbbfe3faf364a99c5a6baf1a2937b4b48ac6') throw Error('Final payload checksum mismatch: ' + digest);
+          fs.writeFileSync('/tmp/final-source.json', zlib.brotliDecompressSync(payload));
+          const chunks = fs.readdirSync('.bootstrap').filter(x => /^source\.\d+\.b64$/.test(x)).sort();
+          const bytes = Buffer.from(chunks.map(x => fs.readFileSync('.bootstrap/' + x, 'utf8')).join(''), 'base64');
+          const stream = zlib.createBrotliDecompress({finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH});
+          const output = [];
+          stream.on('data', data => output.push(data));
+          stream.on('end', () => fs.writeFileSync('/tmp/partial-source.json', Buffer.concat(output)));
+          stream.on('error', error => { fs.writeFileSync('/tmp/partial-source.json', Buffer.concat(output)); console.log('Partial original stream:', error.message); });
+          stream.end(bytes);
+          NODE
+          python3 <<'PY'
+          import hashlib, json, pathlib, subprocess
+          text = pathlib.Path('/tmp/partial-source.json').read_bytes().decode('utf-8', errors='ignore')
+          def write_file(name, value):
+              path = pathlib.PurePosixPath(name)
+              if path.is_absolute() or '..' in path.parts or '.git' in path.parts or not isinstance(value, str):
+                  raise ValueError('Unsafe source record: ' + str(name))
+              dest = pathlib.Path(path)
+              dest.parent.mkdir(parents=True, exist_ok=True)
+              dest.write_text(value, encoding='utf-8')
+          decoder = json.JSONDecoder()
+          pos = 1
+          recovered = []
+          while pos < len(text):
+              try:
+                  while text[pos] in ' \n\r\t,': pos += 1
+                  name, pos = decoder.raw_decode(text, pos)
+                  while text[pos] in ' \n\r\t:': pos += 1
+                  value, pos = decoder.raw_decode(text, pos)
+              except (ValueError, IndexError):
+                  break
+              write_file(name, value)
+              recovered.append(name)
+          start = text.index('"src/app.js":') + len('"src/app.js":')
+          value = text[start:]
+          end = value.rfind('\\n')
+          write_file('src/app.js', json.loads(value[:end] + '"') + '\n')
+          payload = json.loads(pathlib.Path('/tmp/final-source.json').read_text())
+          for name, value in payload['files'].items(): write_file(name, value)
+          pathlib.Path('/tmp/finish.patch').write_text(payload['patch'])
+          subprocess.run(['git', 'apply', '/tmp/finish.patch'], check=True)
+          for name, expected in payload['checksums'].items():
+              actual = hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()
+              if actual != expected: raise ValueError('File checksum mismatch: ' + name)
+          print('Verified', len(payload['checksums']), 'complete source files; recovered', len(recovered), 'original records.')
+          PY
+      - name: Validate, test, and build
+        run: |
+          npm run check
+          npm test
+          npm run build
+      - name: Commit conventional source files
+        run: |
+          rm -rf .bootstrap
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: restore complete local-first Claude Code workspace with WebGPU and API integration'
+          git push origin HEAD:main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restored-site
+          path: dist/
+          include-hidden-files: true
+          retention-days: 14
