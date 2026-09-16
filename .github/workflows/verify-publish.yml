@@ -1,0 +1,136 @@
+name: Verify and publish
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    name: Verify (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check source, run unit tests, and build static site
+        run: |
+          npm run check
+          npm test
+          npm run build
+          node --input-type=module -e "import fs from 'node:fs'; fs.writeFileSync('dist/build.json', JSON.stringify({sha:process.env.GITHUB_SHA,run:process.env.GITHUB_RUN_ID,version:'1.0.0'}));"
+      - name: Install browser acceptance dependencies
+        run: |
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps ${{ matrix.browser }}
+      - name: Serve production output at the Pages project subpath
+        run: |
+          mkdir -p "$RUNNER_TEMP/site/ClaudeCodeDesign"
+          cp -a dist/. "$RUNNER_TEMP/site/ClaudeCodeDesign/"
+          SERVE_DIR="$RUNNER_TEMP/site" node scripts/serve.mjs >"$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4173/ClaudeCodeDesign/ >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/server.log"
+          exit 1
+      - name: Real-browser acceptance with production CSP and mocked Anthropic API
+        run: python tests/browser.py --url http://127.0.0.1:4173/ClaudeCodeDesign/ --browser ${{ matrix.browser }} --output qa-results
+      - name: Preserve browser reports and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-qa-${{ matrix.browser }}
+          path: qa-results/
+          retention-days: 30
+      - name: Package complete source
+        if: matrix.browser == 'chromium'
+        run: git archive --format=zip --prefix=ClaudeCodeDesign/ HEAD > ClaudeCodeDesign-source.zip
+      - name: Preserve source archive
+        if: matrix.browser == 'chromium'
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-archive
+          path: ClaudeCodeDesign-source.zip
+          retention-days: 30
+      - name: Upload verified Pages site
+        if: matrix.browser == 'chromium' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    name: Deploy GitHub Pages
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment
+  published-smoke:
+    name: Verify published website
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install smoke-test browser
+        run: |
+          python -m pip install playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Confirm the deployed commit
+        env:
+          SITE_URL: ${{ needs.deploy.outputs.url }}
+        run: |
+          python - <<'PY'
+          import json, os, time, urllib.request
+          url = os.environ['SITE_URL'].rstrip('/') + '/build.json?revision=' + os.environ['GITHUB_SHA']
+          for attempt in range(30):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      info = json.load(response)
+                  if info['sha'] == os.environ['GITHUB_SHA']:
+                      print('Verified published commit:', info['sha'])
+                      break
+              except Exception as error:
+                  print('Publication propagation:', type(error).__name__)
+              time.sleep(3)
+          else:
+              raise SystemExit('Published build did not match this workflow commit')
+          PY
+      - name: Exercise the public HTTPS website
+        env:
+          SITE_URL: ${{ needs.deploy.outputs.url }}
+        run: python tests/browser.py --url "$SITE_URL" --smoke --output published-qa
+      - name: Preserve public-site evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-site-qa
+          path: published-qa/
+          retention-days: 30
