@@ -77,7 +77,7 @@ python tests/browser.py --url http://localhost:4173/ --output qa-results
 python tests/browser.py --url https://wieslawsoltes.github.io/ClaudeCodeDesign/ --smoke --output qa-results/live
 ```
 
-The 63 dependency-free unit tests cover data-model, import, Markdown, ZIP, and API streaming/tool boundaries. Browser checks cover real module loading, responsive layouts at 320/390/768/1440 pixels, touch navigation, keyboard dialogs, local editing and persistence, the demo review/undo flow, prompt creation, mocked API streaming and tool calls, selected context, credential lifecycle, workspace backups, interactive sandbox isolation, and an actual offline service-worker reload. Browser reports and screenshots are written to the requested output directory. No paid provider key is used by CI. See [Verification](docs/VERIFICATION.md) for the evidence boundaries.
+The 68 dependency-free unit tests cover data-model, import, Markdown, ZIP, API streaming/tool boundaries, offline route normalization, and project-scoped cache cleanup. Browser checks cover real module loading, responsive layouts at 320/390/768/1440 pixels, touch navigation, keyboard dialogs, local editing and persistence, the demo review/undo flow, prompt creation, mocked API streaming and tool calls, selected context, credential lifecycle, workspace backups, interactive sandbox isolation, and offline reload/edit persistence with the test origin stopped. Browser reports and screenshots are written to the requested output directory. No paid provider key is used by CI. See [Verification](docs/VERIFICATION.md) for the evidence boundaries.
 
 ## Deliberate boundaries
 
