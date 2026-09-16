@@ -4,6 +4,7 @@ Run: python tests/browser.py --url http://127.0.0.1:4173/ --output qa
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
@@ -16,6 +17,7 @@ args = parser.parse_args()
 BASE = args.url.rstrip('/') + '/'
 OUT = Path(args.output); OUT.mkdir(parents=True, exist_ok=True)
 results = []
+console_errors = []
 
 def passed(name, detail=None):
     results.append({'name': name, 'passed': True, 'detail': detail})
@@ -55,8 +57,9 @@ try:
     context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True)
     page = context.new_page(); errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
+    page.on('console', lambda message: console_errors.append(message.text) if message.type == 'error' else None)
     page.goto(BASE); expect(page.locator('h1')).to_contain_text('Great ideas')
-    page.wait_for_function("['Canvas', 'WebGPU'].some(x => document.querySelector('#renderer-status')?.textContent.includes(x))")
+    expect(page.locator('#renderer-status')).to_have_text(re.compile(r'^(Canvas|WebGPU)$'), timeout=15000)
     no_overflow(page)
     assert not page.locator('.mobile-menu').is_visible()
     page.screenshot(path=str(OUT/'desktop.png'), full_page=True)
@@ -154,7 +157,11 @@ try:
       passed('No uncaught application JavaScript errors')
       # Separate un-routed browser context for actual service-worker cache behavior.
       offline_context=browser.new_context(viewport={'width':1280,'height':900})
-      offline=offline_context.new_page();offline.goto(BASE);offline.evaluate('navigator.serviceWorker.ready.then(()=>true)');offline.reload();offline.wait_for_function('navigator.serviceWorker.controller !== null')
+      offline=offline_context.new_page();offline.goto(BASE);offline.evaluate('navigator.serviceWorker.ready.then(()=>true)');offline.reload()
+      for attempt in range(50):
+        if offline.evaluate('() => navigator.serviceWorker.controller !== null'): break
+        offline.wait_for_timeout(100)
+      else: raise AssertionError('Service worker did not take control')
       offline_context.set_offline(True);offline.reload();expect(offline.locator('h1')).to_contain_text('Great ideas');go(offline,'files');expect(offline.locator('#editor')).to_be_visible();offline_context.set_offline(False);offline_context.close()
       passed('Service worker reloads the application shell and editor offline')
     else:
@@ -165,4 +172,4 @@ except Exception as error:
     results.append({'name':'Acceptance failure','passed':False,'detail':str(error)})
     raise
 finally:
-    (OUT/'browser-results.json').write_text(json.dumps({'browser':args.browser,'url':BASE,'results':results,'paid_api_tested':False},indent=2))
+    (OUT/'browser-results.json').write_text(json.dumps({'browser':args.browser,'url':BASE,'results':results,'paid_api_tested':False,'console_errors':console_errors},indent=2))
