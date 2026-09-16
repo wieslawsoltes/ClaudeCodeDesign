@@ -55,7 +55,9 @@ try:
       launch['channel'] = 'chromium'
       if os.environ.get('CHROMIUM_EXECUTABLE'): launch['executable_path'] = os.environ['CHROMIUM_EXECUTABLE']
     browser = getattr(p, args.browser).launch(**launch)
-    context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True)
+    # Playwright cannot reliably intercept requests controlled by service workers.
+    # Keep mocked API tests isolated; actual offline/SW behavior is tested separately below.
+    context = browser.new_context(viewport={'width':1440,'height':1000}, reduced_motion='reduce', accept_downloads=True, service_workers='block')
     page = context.new_page(); errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('console', lambda message: console_errors.append(message.text) if message.type == 'error' else None)
@@ -171,6 +173,12 @@ try:
     context.close();browser.close()
 except Exception as error:
     results.append({'name':'Acceptance failure','passed':False,'detail':str(error)})
+    try:
+        if not page.is_closed():
+            page.screenshot(path=str(OUT/'failure.png'),full_page=True)
+            results.append({'name':'Failure dialog detail','passed':False,'detail':page.locator('#dialog-error').inner_text(timeout=1000) if page.locator('#dialog-error').count() else ''})
+    except Exception:
+        pass
     raise
 finally:
     (OUT/'browser-results.json').write_text(json.dumps({'browser':args.browser,'url':BASE,'results':results,'paid_api_tested':False,'console_errors':console_errors},indent=2))
