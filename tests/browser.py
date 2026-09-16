@@ -51,7 +51,7 @@ try:
   with sync_playwright() as p:
     launch = {'headless': True}
     if args.browser == 'chromium':
-      launch['args'] = ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-features=Vulkan', '--disable-vulkan-surface']
+      launch['args'] = ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-features=Vulkan']
       launch['channel'] = 'chromium'
       if os.environ.get('CHROMIUM_EXECUTABLE'): launch['executable_path'] = os.environ['CHROMIUM_EXECUTABLE']
     browser = getattr(p, args.browser).launch(**launch)
@@ -178,15 +178,9 @@ try:
       passed('Cancelled connection cannot late-write credentials or reopen dialogs')
       assert not errors, errors
       passed('No uncaught application JavaScript errors')
-      # Separate un-routed browser context for actual service-worker cache behavior.
-      offline_context=browser.new_context(viewport={'width':1280,'height':900})
-      offline=offline_context.new_page();offline.goto(BASE);offline.evaluate('navigator.serviceWorker.ready.then(()=>true)');offline.reload()
-      for attempt in range(50):
-        if offline.evaluate('() => navigator.serviceWorker.controller !== null'): break
-        offline.wait_for_timeout(100)
-      else: raise AssertionError('Service worker did not take control')
-      offline_context.set_offline(True);offline.reload();expect(offline.locator('h1')).to_contain_text('Great ideas');go(offline,'files');expect(offline.locator('#editor')).to_be_visible();offline_context.set_offline(False);offline_context.close()
-      passed('Service worker reloads the application shell and editor offline')
+      # A real stopped origin avoids WebKit's offline-emulation reload failure.
+      from offline import verify_offline
+      passed('Service worker survives a real origin outage and persists offline edits', verify_offline(browser))
     else:
       assert not errors, errors
       passed('Published-site native module and preview smoke has no uncaught errors')
