@@ -1,0 +1,98 @@
+name: Renderer diagnostics
+on:
+  push:
+    paths: ['.github/workflows/render-diagnostics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install playwright==1.57.0 pillow==12.0.0
+          python -m playwright install --with-deps chromium
+          node scripts/serve.mjs >/tmp/site.log 2>&1 &
+          sleep 1
+      - name: Compare actual shader readback and compositor output
+        run: |
+          mkdir -p diagnostics
+          cat > /tmp/diagnose.py <<'PY'
+          import json,io,traceback
+          from PIL import Image
+          from playwright.sync_api import sync_playwright
+          variants={
+            'original':['--use-angle=swiftshader','--use-vulkan=swiftshader','--enable-features=Vulkan','--disable-vulkan-surface'],
+            'vulkan-angle':['--use-angle=vulkan','--use-vulkan=swiftshader','--enable-features=Vulkan','--disable-vulkan-surface'],
+            'minimal':['--use-angle=swiftshader','--enable-unsafe-swiftshader'],
+            'vulkan-surface':['--use-angle=swiftshader','--use-vulkan=swiftshader','--enable-features=Vulkan'],
+          }
+          results=[]
+          with sync_playwright() as p:
+            for name,flags in variants.items():
+              entry={'variant':name,'errors':[]};results.append(entry)
+              browser=None
+              try:
+                browser=p.chromium.launch(channel='chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage','--enable-unsafe-webgpu']+flags)
+                context=browser.new_context(viewport={'width':1440,'height':1000},reduced_motion='reduce',service_workers='allow')
+                page=context.new_page()
+                page.on('console',lambda msg: entry['errors'].append(msg.text) if msg.type in ['error','warning'] else None)
+                page.on('pageerror',lambda error: entry['errors'].append(str(error)))
+                page.goto('http://127.0.0.1:4173/')
+                page.wait_for_timeout(1500)
+                entry['dom']=page.locator('#ambient').evaluate('(c)=>({width:c.width,height:c.height,opacity:getComputedStyle(c).opacity,rect:c.getBoundingClientRect().toJSON(),status:document.querySelector("#renderer-status").textContent})')
+                screenshot=page.locator('.hero-art').screenshot(path='diagnostics/'+name+'.png')
+                image=Image.open(io.BytesIO(screenshot)).convert('RGB')
+                entry['screenshot_colored']=sum(r-g>35 and g-b>7 for r,g,b in image.getdata())
+                entry['gpu']=page.evaluate('''async()=>{
+                  const adapter=await navigator.gpu?.requestAdapter({powerPreference:'low-power'});
+                  if (!adapter) return {available:false};
+                  const device=await adapter.requestDevice();
+                  device.pushErrorScope('validation');
+                  const {SHADER,PARTICLES}=await import('./src/gpu.js');
+                  const module=device.createShaderModule({code:SHADER});
+                  const compile=await module.getCompilationInfo();
+                  const pipeline=await device.createRenderPipelineAsync({layout:'auto',vertex:{module,entryPoint:'vertexMain'},fragment:{module,entryPoint:'fragmentMain',targets:[{format:'rgba8unorm',blend:{color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'},alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]},primitive:{topology:'triangle-list'}});
+                  const uniform=device.createBuffer({size:32,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+                  device.queue.writeBuffer(uniform,0,new Float32Array([0,320/256,0,0,0,0,0,0]));
+                  const bind=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:uniform}}]});
+                  const texture=device.createTexture({size:[320,256],format:'rgba8unorm',usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});
+                  const read=device.createBuffer({size:320*256*4,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+                  const encoder=device.createCommandEncoder();
+                  const pass=encoder.beginRenderPass({colorAttachments:[{view:texture.createView(),clearValue:[0,0,0,0],loadOp:'clear',storeOp:'store'}]});
+                  pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.draw(6,PARTICLES);pass.end();
+                  encoder.copyTextureToBuffer({texture},{buffer:read,bytesPerRow:1280},[320,256]);
+                  device.queue.submit([encoder.finish()]);await read.mapAsync(GPUMapMode.READ);
+                  const bytes=new Uint8Array(read.getMappedRange());let alpha=0,red=0;
+                  for(let i=0;i<bytes.length;i+=4){if(bytes[i+3]>0)alpha++;if(bytes[i]>20)red++;}
+                  read.unmap();
+                  const error=await device.popErrorScope();
+                  const info={vendor:adapter.info?.vendor,architecture:adapter.info?.architecture,device:adapter.info?.device,description:adapter.info?.description};
+                  device.destroy();return {available:true,alpha,red,info,error:error?.message,compile:compile.messages.map(m=>({type:m.type,message:m.message}))};
+                }''')
+                page.emulate_media(reduced_motion='no-preference');page.wait_for_timeout(500)
+                screenshot=page.locator('.hero-art').screenshot(path='diagnostics/'+name+'-animated.png')
+                image=Image.open(io.BytesIO(screenshot)).convert('RGB')
+                entry['animated_colored']=sum(r-g>35 and g-b>7 for r,g,b in image.getdata())
+              except Exception as error:
+                entry['failure']=str(error)
+              finally:
+                if browser:browser.close()
+                print(json.dumps(entry),flush=True)
+                open('diagnostics/results.json','w').write(json.dumps(results,indent=2))
+          PY
+          python /tmp/diagnose.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renderer-diagnostics
+          path: diagnostics/
+          retention-days: 7
